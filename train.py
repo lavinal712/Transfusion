@@ -33,7 +33,7 @@ def parse_args(input_args=None):
     parser.add_argument("--vae", type=str, default="stabilityai/sd-vae-ft-ema")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--log_every", type=int, default=100)
-    parser.add_argument("--ckpt_every", type=int, default=100)
+    parser.add_argument("--ckpt_every", type=int, default=50_000)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
