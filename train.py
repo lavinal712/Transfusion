@@ -119,7 +119,7 @@ def main(args=None):
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
             loss1 = loss_dict["loss"].mean()
             loss2 = loss_dict["lm_loss"]
-            loss = loss1 + loss2 * 5
+            loss = loss1 * 5 + loss2
             opt.zero_grad()
             accelerator.backward(loss)
             opt.step()

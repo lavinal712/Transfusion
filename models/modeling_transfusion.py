@@ -218,7 +218,7 @@ class Transfusion(LlamaForCausalLM):
         for i, _ in enumerate(images_position):
             image_start_index, image_end_index = images_position[i]
             x.append(hidden_states[i, image_start_index: image_end_index])
-        x = torch.cat(x, dim=0)
+        x = torch.stack(x, dim=0)
         x = self.final_layer(x, t)
         x = self.unpatchify(x)
 
