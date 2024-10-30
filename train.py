@@ -11,7 +11,7 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from diffusers import AutoencoderKL
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from data.ImageNet.imagenet import ImageNetDataset, ImageNetProcessor, ImageNetCollator
 from diffusion import create_diffusion

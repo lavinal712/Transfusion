@@ -60,8 +60,6 @@ class ImageNetDataset(Dataset):
         self.data_root = data_root
         self.processor = processor
 
-        self.synset2idx = synset2idx()
-        self.idx2label = idx2label()
         self.synset2label = synset2label()
 
         self.data = []
@@ -184,8 +182,7 @@ class ImageNetCollator:
         return padded_input_ids, attention_mask, position_ids, labels, input_images, images_position
 
     def __call__(self, mllm_inputs):
-        input_ids, attention_mask, position_ids, labels, input_images, images_position = self.process_mllm_input(
-            mllm_inputs)
+        input_ids, attention_mask, position_ids, labels, input_images, images_position = self.process_mllm_input(mllm_inputs)
         data = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
