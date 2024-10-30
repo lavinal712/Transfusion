@@ -18,6 +18,12 @@ conda activate transfusion
 pip install -r requirements.txt
 ```
 
+## Sampling
+
+```bash
+python sample.py --model_name /path/to/pretrained_model
+```
+
 ## Training
 
 ```bash
