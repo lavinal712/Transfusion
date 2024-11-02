@@ -170,6 +170,18 @@ class ImageNetCollator:
 
         return torch.LongTensor(position_ids)
 
+    def create_attention_mask(self, attention_mask, images_position):
+        seq_length = attention_mask.size(-1)
+        attn_mask = []
+        for i, mask in enumerate(attention_mask):
+            image_start_index, image_end_index = images_position[i]
+            curr_mask = torch.triu(torch.ones(seq_length, seq_length))
+            curr_mask[image_start_index: image_end_index, image_start_index: image_end_index] = 1
+            attn_mask.append(curr_mask)
+        attn_mask = torch.stack(attn_mask, dim=0).unsqueeze(1)
+
+        return attn_mask
+
     def process_mllm_input(self, mllm_inputs):
         input_ids = [x["input_ids"] for x in mllm_inputs]
         input_images = torch.stack([x["input_image"] for x in mllm_inputs], dim=0)
@@ -177,6 +189,7 @@ class ImageNetCollator:
 
         padded_input_ids, attention_mask = self.pad_input_ids(input_ids)
         position_ids = self.create_position(attention_mask)
+        attention_mask = self.create_attention_mask(attention_mask, images_position)
         labels = torch.where(padded_input_ids == 0, -100, padded_input_ids)
 
         return padded_input_ids, attention_mask, position_ids, labels, input_images, images_position

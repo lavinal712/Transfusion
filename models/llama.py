@@ -116,8 +116,10 @@ class TransfusionModel(LlamaModel):
             )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-        
-        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds)
+
+        # causal_mask = self._update_causal_mask(attention_mask, inputs_embeds)
+        attention_mask = (1 - attention_mask) * torch.finfo(inputs_embeds.dtype).min
+        attention_mask = attention_mask.to(inputs_embeds.dtype)
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
@@ -136,7 +138,7 @@ class TransfusionModel(LlamaModel):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    causal_mask,
+                    attention_mask,
                     position_ids,
                     past_key_values,
                     output_attentions,
@@ -146,7 +148,7 @@ class TransfusionModel(LlamaModel):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=causal_mask,
+                    attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,

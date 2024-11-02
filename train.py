@@ -147,9 +147,12 @@ def main(args=None):
                 checkpoint_path = f"{checkpoint_dir}/model_{train_steps:07d}.pt"
                 torch.save(checkpoint, checkpoint_path)
                 model.save_pretrained(checkpoint_dir)
-                processor.tokenizer.save_pretrained(checkpoint_dir)
-                model.config.save_pretrained(checkpoint_dir)
-                logger.info(f"Saved checkpoint to {checkpoint_dir}")
+                if accelerator.is_main_process:
+                    torch.save(checkpoint, checkpoint_path)
+                    model.save_pretrained(checkpoint_dir)
+                    processor.tokenizer.save_pretrained(checkpoint_dir)
+                    model.config.save_pretrained(checkpoint_dir)
+                    logger.info(f"Saved checkpoint to {checkpoint_dir}")
 
     model.eval()
 
