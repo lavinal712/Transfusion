@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from ..diffusion import create_diffusion
+from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_projector import build_vision_projector, build_gen_vision_projector
 
 
