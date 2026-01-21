@@ -29,6 +29,7 @@ class VAEVisionTower(nn.Module):
             self.vision_tower = AutoencoderKL.from_pretrained(self.vision_tower_name, subfolder="vae", device_map=device_map)
         self.vision_tower.requires_grad_(False)
 
+        self.scaling_factor = self.vision_tower.config.scaling_factor
         self.vae_scale_factor = 2 ** (len(self.vision_tower.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(self.vae_scale_factor)
 
@@ -36,15 +37,27 @@ class VAEVisionTower(nn.Module):
 
     @torch.no_grad()
     def forward(self, images):
-        return self.vision_tower(images.to(self.device, dtype=self.dtype)).sample
+        if type(images) is list:
+            latents = []
+            for image in images:
+                latent = self.vision_tower(image.to(self.device, dtype=self.dtype).unsqueeze(0)).sample.mul_(self.scaling_factor)
+                latents.append(latent)
+        else:
+            latents = self.vision_tower(images.to(self.device, dtype=self.dtype)).sample
+
+        return latents
 
     @torch.no_grad()
     def encode(self, images):
-        return self.vision_tower.encode(images.to(self.device, dtype=self.dtype)).latent_dist.sample()
+        return self.vision_tower.encode(images.to(self.device, dtype=self.dtype)).latent_dist.sample().mul_(self.scaling_factor)
 
     @torch.no_grad()
     def decode(self, latents):
-        return self.vision_tower.decode(latents).sample
+        return self.vision_tower.decode(latents / self.scaling_factor).sample
+
+    @property
+    def dummy_feature(self):
+        return torch.zeros(1, self.hidden_size, device=self.device, dtype=self.dtype)
 
     @property
     def dtype(self):
