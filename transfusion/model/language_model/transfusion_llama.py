@@ -11,7 +11,7 @@ from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM
 
 
 class TransfusionConfig(LlamaConfig):
-    model_type = "llava_llama"
+    model_type = "transfusion_llama"
 
 
 class TransfusionLlamaModel(TransfusionMetaModel, LlamaModel):
@@ -51,7 +51,14 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
         images: Optional[torch.FloatTensor] = None,
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if inputs_embeds is None:
             (
@@ -60,7 +67,8 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 attention_mask,
                 past_key_values,
                 inputs_embeds,
-                labels
+                labels,
+                image_positions
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -71,7 +79,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 image_sizes
             )
 
-        return super().forward(
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -82,6 +90,46 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict
+        )
+
+        hidden_states = outputs[0]
+
+        total_loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = hidden_states[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+            # TODO: compute image loss
+            if image_positions is not None:
+                # Compute image loss
+                batch_size = labels.size(0)
+                seq_len = labels.size(1)
+                hidden_size = hidden_states.size(-1)
+                image_hidden_states = hidden_states.view(batch_size, seq_len, hidden_size)[image_positions.bool()].view(-1, hidden_size)
+                image_labels = labels.view(-1)[image_positions.view(-1).bool()]
+                image_logits = self.lm_head(image_hidden_states)
+
+                image_loss_fct = nn.CrossEntropyLoss()
+                image_loss = image_loss_fct(image_logits, image_labels.to(image_logits.device))
+
+                total_loss = loss + image_loss
+            else:
+                total_loss = loss
+
+        return CausalLMOutputWithPast(
+            loss=outputs.loss,
+            logits=outputs.logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
 
     @torch.no_grad()
