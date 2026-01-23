@@ -22,7 +22,7 @@ class TransfusionLlamaModel(TransfusionMetaModel, LlamaModel):
 
 
 class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
-    config_class = LlavaConfig
+    config_class = TransfusionConfig
 
     def __init__(self, config):
         super(LlamaForCausalLM, self).__init__(config)
@@ -68,7 +68,11 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 past_key_values,
                 inputs_embeds,
                 labels,
-                image_positions
+                image_positions,
+                latents,
+                noised_latents,
+                timesteps,
+                noise
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -93,11 +97,13 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
         )
 
         hidden_states = outputs[0]
+        logits = self.lm_head(hidden_states)
+        logits = logits.float()
 
         total_loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
-            shift_logits = hidden_states[..., :-1, :].contiguous()
+            shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss()
@@ -107,26 +113,43 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-            # TODO: compute image loss
             if image_positions is not None:
-                # Compute image loss
-                batch_size = labels.size(0)
-                seq_len = labels.size(1)
-                hidden_size = hidden_states.size(-1)
-                image_hidden_states = hidden_states.view(batch_size, seq_len, hidden_size)[image_positions.bool()].view(-1, hidden_size)
-                image_labels = labels.view(-1)[image_positions.view(-1).bool()]
-                image_logits = self.lm_head(image_hidden_states)
+                image_hidden_states = (hidden_states * image_positions.unsqueeze(-1).to(hidden_states.dtype)).contiguous()
+                output_image_features = self.encode_image_embeds(image_hidden_states)
+                output_latents = self.unpatchify(output_image_features)
 
-                image_loss_fct = nn.CrossEntropyLoss()
-                image_loss = image_loss_fct(image_logits, image_labels.to(image_logits.device))
+                terms = {}
 
-                total_loss = loss + image_loss
+                B, C = output_latents.shape[:2]
+                assert output_latents.shape == (B, C * 2, *latents.shape[2:])
+                output_latents, output_var_values = torch.split(output_latents, C, dim=1)
+                # Learn the variance using the variational bound, but don't let
+                # it affect our mean prediction.
+                frozen_out = torch.cat([output_latents.detach(), output_var_values], dim=1)
+                terms["vb"] = self.diffusion._vb_terms_bpd(
+                    model=lambda *args, r=frozen_out: r,
+                    x_start=latents,
+                    x_t=noised_latents,
+                    t=timesteps,
+                    clip_denoised=False,
+                )["output"]
+                assert output_latents.shape == noise.shape == latents.shape
+                terms["mse"] = mean_flat((noise - output_latents) ** 2)
+                if "vb" in terms:
+                    terms["loss"] = terms["mse"] + terms["vb"]
+                else:
+                    terms["loss"] = terms["mse"]
+                
+                image_loss = terms["loss"].mean()
+
+                image_weight = 0.5
+                total_loss = loss + image_weight * image_loss
             else:
                 total_loss = loss
 
         return CausalLMOutputWithPast(
-            loss=outputs.loss,
-            logits=outputs.logits,
+            loss=total_loss,
+            logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
@@ -152,6 +175,11 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 attention_mask,
                 _,
                 inputs_embeds,
+                _,
+                _,
+                _,
+                _,
+                _,
                 _
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs,
@@ -172,6 +200,12 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             **kwargs
         )
 
+    def generate_images(
+        self,
+        text
+    ):
+        pass
+
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)
@@ -185,5 +219,5 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             inputs['image_sizes'] = image_sizes
         return inputs
 
-AutoConfig.register("transfusion_llama", LlavaConfig)
+AutoConfig.register("transfusion_llama", TransfusionConfig)
 AutoModelForCausalLM.register(TransfusionConfig, TransfusionLlamaForCausalLM)

@@ -145,8 +145,22 @@ class TransfusionMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
     
     def encode_images(self, images):
-        image_features = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().mm_projector(image_features)
+        latents = self.get_model().get_vision_tower()(images)
+        image_features = self.get_model().mm_projector(noised_latents)
+        return image_features
+
+    def encode_images_2(self, images, timesteps=None):
+        latents = self.get_model().get_vision_tower()(images)
+        noise = None
+        noised_latents = latents
+        if timesteps is not None:
+            noise = torch.randn_like(latents)
+            noised_latents = self.diffusion.q_sample(latents, timesteps, noise=noise)
+        image_features = self.get_model().mm_projector(noised_latents)
+        return image_features, latents, noised_latents, noise
+
+    def encode_image_embeds(self, image_embeds):
+        image_features = self.get_model().gen_projector(image_embeds)
         return image_features
 
     def unpatchify(self, x):
@@ -164,12 +178,6 @@ class TransfusionMetaForCausalLM(ABC):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def decode_images(self, latents):
-        latents = self.get_model().gen_projector(latents)
-        latents = self.unpatchify(latents)
-        reconstructed_images = self.get_model().get_vision_tower().decode(latents)
-        return reconstructed_images
-
     def get_mm_projector(self):
         return self.get_model().mm_projector
 
@@ -182,8 +190,10 @@ class TransfusionMetaForCausalLM(ABC):
     ):
         vision_tower = self.get_vision_tower()
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None, None
 
+        latents = None
+        timesteps = None
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
@@ -233,7 +243,8 @@ class TransfusionMetaForCausalLM(ABC):
             else:
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
-            image_features = self.encode_images(images)
+            timesteps = torch.randint(0, self.diffusion.num_timesteps, (x.shape[0],), device=images.device)
+            image_features, latents, noised_latents, noise = self.encode_images_2(images, timesteps)
 
         # TODO: image start / end is not implemented here to support pretraining.
         # if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
@@ -379,7 +390,7 @@ class TransfusionMetaForCausalLM(ABC):
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, new_image_positions
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, new_image_positions, latents, noised_latents, timesteps, noise
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
         if model_args.mm_use_im_patch_token:
