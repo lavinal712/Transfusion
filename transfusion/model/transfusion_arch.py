@@ -3,14 +3,13 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 
+from .diffusion import create_diffusion
 from .multimodal_encoder.builder import build_vision_tower
-from .multimodal_projector import build_vision_projector, build_gen_vision_projector
+from .multimodal_projector.builder import TimestepEmbedder, build_vision_projector, build_gen_vision_projector
 
 from transfusion.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 from transfusion.mm_utils import get_anyres_image_grid_shape
-
-from transfusion.diffusion import create_diffusion
 
 
 class TransfusionMetaModel:
@@ -22,7 +21,7 @@ class TransfusionMetaModel:
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
             self.gen_projector = build_gen_vision_projector(config)
-            self.diffusion = create_diffusion("")
+            self.t_embedder = TimestepEmbedder(config.hidden_size)
 
             if 'unpad' in getattr(config, 'mm_patch_merge_type', ''):
                 self.image_newline = nn.Parameter(
@@ -41,8 +40,7 @@ class TransfusionMetaModel:
         mm_vision_select_feature = model_args.mm_vision_select_feature
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
         mm_patch_merge_type = model_args.mm_patch_merge_type
-
-        mm_image_size = model_args.mm_image_size
+        mm_input_size = model_args.mm_input_size
         mm_patch_size = model_args.mm_patch_size
         mm_in_channels = model_args.mm_in_channels
         mm_out_channels = model_args.mm_out_channels
@@ -64,14 +62,14 @@ class TransfusionMetaModel:
             vision_tower.load_model()
 
         self.config.use_mm_proj = True
-        self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear')
-        self.config.gen_projector_type = getattr(model_args, 'gen_projector_type', 'linear')
+        self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear_2')
+        self.config.gen_projector_type = getattr(model_args, 'gen_projector_type', 'linear_2')
         self.config.mm_hidden_size = vision_tower.hidden_size
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
-
-        self.config.mm_image_size = mm_image_size
+        self.config.mm_latent_channels = vision_tower.latent_channels
+        self.config.mm_input_size = mm_input_size
         self.config.mm_patch_size = mm_patch_size
         self.config.mm_in_channels = mm_in_channels
         self.config.mm_out_channels = mm_out_channels
@@ -86,7 +84,7 @@ class TransfusionMetaModel:
                 )
         else:
             # In case it is frozen by LoRA
-            for p in self.projector.parameters():
+            for p in self.mm_projector.parameters():
                 p.requires_grad = True
 
         if getattr(self, "gen_projector", None) is None:
@@ -94,6 +92,13 @@ class TransfusionMetaModel:
         else:
             # In case it is frozen by LoRA
             for p in self.gen_projector.parameters():
+                p.requires_grad = True
+
+        if getattr(self, "t_embedder", None) is None:
+            self.t_embedder = TimestepEmbedder(self.config.hidden_size)
+        else:
+            # In case it is frozen by LoRA
+            for p in self.t_embedder.parameters():
                 p.requires_grad = True
 
         if pretrain_mm_mlp_adapter is not None:
@@ -145,22 +150,23 @@ class TransfusionMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
     
     def encode_images(self, images):
-        latents = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().mm_projector(noised_latents)
+        image_features = self.get_model().get_vision_tower()(images)
+        image_features = self.get_model().mm_projector(image_features)
         return image_features
 
-    def encode_images_2(self, images, timesteps=None):
-        latents = self.get_model().get_vision_tower()(images)
+    def encode_images_2(self, images, timesteps=None, t_emb=None):
+        latents = self.get_model().get_vision_tower().encode(images)
         noise = None
         noised_latents = latents
         if timesteps is not None:
+            diffusion = create_diffusion("")
             noise = torch.randn_like(latents)
-            noised_latents = self.diffusion.q_sample(latents, timesteps, noise=noise)
+            noised_latents = diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
         image_features = self.get_model().mm_projector(noised_latents)
         return image_features, latents, noised_latents, noise
 
-    def encode_image_embeds(self, image_embeds):
-        image_features = self.get_model().gen_projector(image_embeds)
+    def encode_image_embeds(self, image_embeds, t_emb=None):
+        image_features = self.get_model().gen_projector(image_embeds, t_emb)
         return image_features
 
     def unpatchify(self, x):
@@ -183,6 +189,9 @@ class TransfusionMetaForCausalLM(ABC):
 
     def get_gen_projector(self):
         return self.get_model().gen_projector
+    
+    def get_t_embedder(self):
+        return self.get_model().t_embedder
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
@@ -190,7 +199,7 @@ class TransfusionMetaForCausalLM(ABC):
     ):
         vision_tower = self.get_vision_tower()
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None, None
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None, None, None
 
         latents = None
         timesteps = None
@@ -243,8 +252,9 @@ class TransfusionMetaForCausalLM(ABC):
             else:
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
-            timesteps = torch.randint(0, self.diffusion.num_timesteps, (x.shape[0],), device=images.device)
-            image_features, latents, noised_latents, noise = self.encode_images_2(images, timesteps)
+            timesteps = torch.randint(0, 1000, (images.shape[0],), device=images.device)
+            t_emb = self.get_model().t_embedder(timesteps, dtype=images.dtype)
+            image_features, latents, noised_latents, noise = self.encode_images_2(images, timesteps, t_emb)
 
         # TODO: image start / end is not implemented here to support pretraining.
         # if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
@@ -386,11 +396,16 @@ class TransfusionMetaForCausalLM(ABC):
             attention_mask = None
         else:
             attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
+            if attention_mask.dim() == 4:
+                dtype = new_input_embeds.dtype
+                min_dtype = torch.finfo(dtype).min
+                attention_mask = (1 - attention_mask.to(dtype=torch.long)) * min_dtype
+                attention_mask = attention_mask.to(new_input_embeds.dtype)
 
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, new_image_positions, latents, noised_latents, timesteps, noise
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, new_image_positions, latents, noised_latents, timesteps, t_emb, noise
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
         if model_args.mm_use_im_patch_token:

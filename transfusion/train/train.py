@@ -40,7 +40,7 @@ class ModelArguments:
     version: Optional[str] = field(default="v1")
     freeze_backbone: bool = field(default=False)
     tune_mm_mlp_adapter: bool = field(default=False)
-    vision_tower: Optional[str] = field(default="stabilityai/sdxl-vae")
+    vision_tower: Optional[str] = field(default="lavinal712/transfusion-vae")
     mm_vision_select_layer: Optional[int] = field(default=-1)   # default to the last layer
     pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
     mm_projector_type: Optional[str] = field(default='linear_2')
@@ -49,10 +49,10 @@ class ModelArguments:
     mm_use_im_patch_token: bool = field(default=True)
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
-    mm_image_size: Optional[int] = field(default=256)
+    mm_input_size: Optional[int] = field(default=32)
     mm_patch_size: Optional[int] = field(default=2)
-    mm_in_channels: Optional[int] = field(default=4)
-    mm_out_channels: Optional[int] = field(default=8)
+    mm_in_channels: Optional[int] = field(default=8)
+    mm_out_channels: Optional[int] = field(default=16)
 
 
 @dataclass
@@ -62,7 +62,8 @@ class DataArguments:
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
-    image_aspect_ratio: str = 'square'
+    image_aspect_ratio: str = 'fix'
+    mm_image_size: Optional[int] = field(default=256)
 
 
 @dataclass
@@ -703,6 +704,9 @@ class LazySupervisedDataset(Dataset):
                         return result
                 image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            elif self.data_args.image_aspect_ratio == 'fix':
+                image_height, image_width = self.data_args.mm_image_size, self.data_args.mm_image_size
+                image = processor.preprocess(image, image_height, image_width)[0]
             else:
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
             sources = preprocess_multimodal(
@@ -937,7 +941,7 @@ def train(attn_implementation=None):
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
-    trainer = TranfusionTrainer(model=model,
+    trainer = TransfusionTrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
                     **data_module)

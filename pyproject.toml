@@ -26,3 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 train = ["deepspeed==0.15.4", "ninja", "wandb"]
 build = ["build", "twine"]
+
+[tool.setuptools.packages.find]
+include = ["transfusion*"]
+exclude = ["checkpoints*", "scripts*"]

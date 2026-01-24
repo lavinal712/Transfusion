@@ -31,7 +31,7 @@ class VAEVisionTower(nn.Module):
 
         self.scaling_factor = self.vision_tower.config.scaling_factor
         self.vae_scale_factor = 2 ** (len(self.vision_tower.config.block_out_channels) - 1)
-        self.image_processor = VaeImageProcessor(self.vae_scale_factor)
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
         self.is_loaded = True
 
@@ -40,7 +40,7 @@ class VAEVisionTower(nn.Module):
         if type(images) is list:
             latents = []
             for image in images:
-                latent = self.vision_tower(image.to(self.device, dtype=self.dtype).unsqueeze(0)).sample.mul_(self.scaling_factor)
+                latent = self.vision_tower(image.to(self.device, dtype=self.dtype).unsqueeze(0)).sample
                 latents.append(latent)
         else:
             latents = self.vision_tower(images.to(self.device, dtype=self.dtype)).sample
@@ -73,6 +73,10 @@ class VAEVisionTower(nn.Module):
             return self.vision_tower.config
         else:
             return self.cfg_only
+
+    @property
+    def hidden_size(self):
+        return 1024 # dummy
 
     @property
     def latent_channels(self):

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, \
 from transformers.generation.utils import GenerateOutput
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM
+from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM, create_diffusion
 
 
 class TransfusionConfig(LlamaConfig):
@@ -72,6 +72,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 latents,
                 noised_latents,
                 timesteps,
+                t_emb,
                 noise
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
@@ -114,19 +115,27 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             loss = loss_fct(shift_logits, shift_labels)
 
             if image_positions is not None:
-                image_hidden_states = (hidden_states * image_positions.unsqueeze(-1).to(hidden_states.dtype)).contiguous()
-                output_image_features = self.encode_image_embeds(image_hidden_states)
+                image_hidden_states = hidden_states[image_positions.bool()]
+                image_hidden_states = image_hidden_states.view(hidden_states.shape[0], -1, hidden_states.shape[-1])
+                output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
                 output_latents = self.unpatchify(output_image_features)
 
                 terms = {}
+                diffusion = create_diffusion("")
 
-                B, C = output_latents.shape[:2]
+                def mean_flat(tensor):
+                    """
+                    Take the mean over all non-batch dimensions.
+                    """
+                    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+
+                B, C = noised_latents.shape[:2]
                 assert output_latents.shape == (B, C * 2, *latents.shape[2:])
                 output_latents, output_var_values = torch.split(output_latents, C, dim=1)
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
                 frozen_out = torch.cat([output_latents.detach(), output_var_values], dim=1)
-                terms["vb"] = self.diffusion._vb_terms_bpd(
+                terms["vb"] = diffusion._vb_terms_bpd(
                     model=lambda *args, r=frozen_out: r,
                     x_start=latents,
                     x_t=noised_latents,
@@ -175,6 +184,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 attention_mask,
                 _,
                 inputs_embeds,
+                _,
                 _,
                 _,
                 _,
