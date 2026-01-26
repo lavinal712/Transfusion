@@ -1,0 +1,42 @@
+#!/bin/bash
+
+deepspeed transfusion/train/train.py \
+    --deepspeed ./scripts/zero3.json \
+    --model_name_or_path /aiarena/group/gmgroup/hongyq/models/lmsys/vicuna-7b-v1.5 \
+    --version v1 \
+    --data_path /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/llava_v1_5_mix665k_filtered.json \
+    --image_folder /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/data \
+    --vision_tower /aiarena/group/gmgroup/hongyq/models/lavinal712/transfusion-vae \
+    --mm_projector_type linear_2 \
+    --gen_projector_type linear_2 \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token True \
+    --mm_input_size 32 \
+    --mm_patch_size 2 \
+    --mm_in_channels 8 \
+    --mm_out_channels 16 \
+    --image_aspect_ratio fix \
+    --mm_image_size 256 \
+    --group_by_modality_length True \
+    --bf16 True \
+    --output_dir ./checkpoints/transfusion-v1.5-7b \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 16 \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps 50000 \
+    --save_total_limit 1 \
+    --learning_rate 2e-4 \
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --tf32 True \
+    --model_max_length 2048 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 4 \
+    --lazy_preprocess True \
+    --report_to wandb

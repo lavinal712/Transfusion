@@ -11,6 +11,48 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM, create_diffusion
 
 
+def mean_flat(tensor):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+
+
+def training_losses(diffusion, model_output, x_start, t, noise=None, x_t=None):
+    """
+    Modified from https://github.com/facebookresearch/DiT/blob/main/diffusion/gaussian_diffusion.py
+    """
+    if noise is None:
+        noise = torch.randn_like(x_start)
+    if x_t is None:
+        x_t = diffusion.q_sample(x_start, t, noise=noise)
+
+    terms = {}
+
+    B, C = x_t.shape[:2]
+    assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+    model_output, model_var_values = torch.split(model_output, C, dim=1)
+    # Learn the variance using the variational bound, but don't let
+    # it affect our mean prediction.
+    frozen_out = torch.cat([model_output.detach(), model_var_values], dim=1)
+    terms["vb"] = diffusion._vb_terms_bpd(
+        model=lambda *args, r=frozen_out: r,
+        x_start=x_start,
+        x_t=x_t,
+        t=t,
+        clip_denoised=False,
+    )["output"]
+
+    assert model_output.shape == noise.shape == x_start.shape
+    terms["mse"] = mean_flat((noise - model_output) ** 2)
+    if "vb" in terms:
+        terms["loss"] = terms["mse"] + terms["vb"]
+    else:
+        terms["loss"] = terms["mse"]
+
+    return terms
+
+
 class TransfusionConfig(LlamaConfig):
     model_type = "transfusion_llama"
 
@@ -119,36 +161,8 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
                 output_latents = self.unpatchify(output_image_features)
 
-                terms = {}
-                diffusion = create_diffusion("")
-
-                def mean_flat(tensor):
-                    """
-                    Take the mean over all non-batch dimensions.
-                    """
-                    return tensor.mean(dim=list(range(1, len(tensor.shape))))
-
-                B, C = noised_latents.shape[:2]
-                assert output_latents.shape == (B, C * 2, *latents.shape[2:])
-                output_latents, output_var_values = torch.split(output_latents, C, dim=1)
-                # Learn the variance using the variational bound, but don't let
-                # it affect our mean prediction.
-                frozen_out = torch.cat([output_latents.detach(), output_var_values], dim=1)
-                terms["vb"] = diffusion._vb_terms_bpd(
-                    model=lambda *args, r=frozen_out: r,
-                    x_start=latents,
-                    x_t=noised_latents,
-                    t=timesteps,
-                    clip_denoised=False,
-                )["output"]
-                assert output_latents.shape == noise.shape == latents.shape
-                terms["mse"] = mean_flat((noise - output_latents) ** 2)
-                if "vb" in terms:
-                    terms["loss"] = terms["mse"] + terms["vb"]
-                else:
-                    terms["loss"] = terms["mse"]
-                
-                image_loss = terms["loss"].mean()
+                loss_dict = training_losses(self.get_model().diffusion, output_latents, latents, timesteps, noise, noised_latents)
+                image_loss = loss_dict["loss"].mean()
 
                 image_weight = 0.5
                 total_loss = loss + image_weight * image_loss

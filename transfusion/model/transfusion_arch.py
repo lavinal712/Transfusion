@@ -17,6 +17,8 @@ class TransfusionMetaModel:
     def __init__(self, config):
         super(TransfusionMetaModel, self).__init__(config)
 
+        self.diffusion = create_diffusion("")
+
         if hasattr(config, "mm_vision_tower"):
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
@@ -148,22 +150,11 @@ class TransfusionMetaForCausalLM(ABC):
 
     def get_vision_tower(self):
         return self.get_model().get_vision_tower()
-    
+
     def encode_images(self, images):
         image_features = self.get_model().get_vision_tower()(images)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
-
-    def encode_images_2(self, images, timesteps=None, t_emb=None):
-        latents = self.get_model().get_vision_tower().encode(images)
-        noise = None
-        noised_latents = latents
-        if timesteps is not None:
-            diffusion = create_diffusion("")
-            noise = torch.randn_like(latents)
-            noised_latents = diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
-        image_features = self.get_model().mm_projector(noised_latents)
-        return image_features, latents, noised_latents, noise
 
     def encode_image_embeds(self, image_embeds, t_emb=None):
         image_features = self.get_model().gen_projector(image_embeds, t_emb)
@@ -195,14 +186,12 @@ class TransfusionMetaForCausalLM(ABC):
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
-        images, image_sizes=None
+        images, image_sizes=None, timesteps=None,
     ):
         vision_tower = self.get_vision_tower()
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None, None, None
 
-        latents = None
-        timesteps = None
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
@@ -252,9 +241,17 @@ class TransfusionMetaForCausalLM(ABC):
             else:
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
-            timesteps = torch.randint(0, 1000, (images.shape[0],), device=images.device)
+            if timesteps is None:
+                timesteps = torch.randint(0, 1000, (images.shape[0],), device=images.device)
             t_emb = self.get_model().t_embedder(timesteps, dtype=images.dtype)
-            image_features, latents, noised_latents, noise = self.encode_images_2(images, timesteps, t_emb)
+
+            latents = self.get_model().get_vision_tower().encode(images)
+            noise = torch.randn_like(latents)
+            if self.get_model().training:
+                noised_latents = self.get_model().diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
+            else:
+                noised_latents = latents
+            image_features = self.get_model().mm_projector(noised_latents)
 
         # TODO: image start / end is not implemented here to support pretraining.
         # if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
