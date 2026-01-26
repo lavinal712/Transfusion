@@ -23,9 +23,10 @@ deepspeed transfusion/train/train.py \
     --bf16 True \
     --output_dir ./checkpoints/transfusion-v1.5-7b-lora \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 4 \
+    --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 16 \
+    --max_grad_norm 1.0 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 50000 \
