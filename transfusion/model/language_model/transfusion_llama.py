@@ -4,53 +4,10 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, \
                          LlamaConfig, LlamaModel, LlamaForCausalLM
-from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
-from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM, create_diffusion
-
-
-def mean_flat(tensor):
-    """
-    Take the mean over all non-batch dimensions.
-    """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
-
-
-def training_losses(diffusion, model_output, x_start, t, noise=None, x_t=None):
-    """
-    Modified from https://github.com/facebookresearch/DiT/blob/main/diffusion/gaussian_diffusion.py
-    """
-    if noise is None:
-        noise = torch.randn_like(x_start)
-    if x_t is None:
-        x_t = diffusion.q_sample(x_start, t, noise=noise)
-
-    terms = {}
-
-    B, C = x_t.shape[:2]
-    assert model_output.shape == (B, C * 2, *x_t.shape[2:])
-    model_output, model_var_values = torch.split(model_output, C, dim=1)
-    # Learn the variance using the variational bound, but don't let
-    # it affect our mean prediction.
-    frozen_out = torch.cat([model_output.detach(), model_var_values], dim=1)
-    terms["vb"] = diffusion._vb_terms_bpd(
-        model=lambda *args, r=frozen_out: r,
-        x_start=x_start,
-        x_t=x_t,
-        t=t,
-        clip_denoised=False,
-    )["output"]
-
-    assert model_output.shape == noise.shape == x_start.shape
-    terms["mse"] = mean_flat((noise - model_output) ** 2)
-    if "vb" in terms:
-        terms["loss"] = terms["mse"] + terms["vb"]
-    else:
-        terms["loss"] = terms["mse"]
-
-    return terms
+from ..transfusion_arch import TransfusionMetaModel, TransfusionMetaForCausalLM
 
 
 class TransfusionConfig(LlamaConfig):
@@ -102,6 +59,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        packed_image_inputs = {}
         if inputs_embeds is None:
             (
                 input_ids,
@@ -110,12 +68,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 past_key_values,
                 inputs_embeds,
                 labels,
-                image_positions,
-                latents,
-                noised_latents,
-                timesteps,
-                t_emb,
-                noise
+                packed_image_inputs
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -125,6 +78,10 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 images,
                 image_sizes
             )
+        image_positions = packed_image_inputs.get("image_positions", None)
+        latents = packed_image_inputs.get("latents", None)
+        timesteps = packed_image_inputs.get("timesteps", None)
+        t_emb = packed_image_inputs.get("t_emb", None)
 
         outputs = self.model(
             input_ids=input_ids,
@@ -161,7 +118,8 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
                 output_latents = self.unpatchify(output_image_features)
 
-                loss_dict = training_losses(self.get_model().diffusion, output_latents, latents, timesteps, noise, noised_latents)
+                model_fn = self.forward_images
+                loss_dict = self.get_model().diffusion.training_losses(model_fn, latents, timesteps, model_output=output_latents)
                 image_loss = loss_dict["loss"].mean()
 
                 image_weight = 0.5
@@ -176,6 +134,85 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+    def forward_images(
+        self,
+        images: Optional[torch.FloatTensor] = None,
+        timesteps: Optional[torch.LongTensor] = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        image_sizes: Optional[List[List[int]]] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+    ):
+        packed_image_inputs = {}
+        (
+            input_ids,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            inputs_embeds,
+            labels,
+            packed_image_inputs
+        ) = self.prepare_inputs_labels_for_multimodal(
+            input_ids,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            labels,
+            images,
+            image_sizes,
+            timesteps=timesteps,
+            is_latent=True,
+            add_noise=False,
+        )
+        image_positions = packed_image_inputs.get("image_positions", None)
+        t_emb = packed_image_inputs.get("t_emb", None)
+
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+
+        if image_positions is not None:
+            image_hidden_states = hidden_states[image_positions.bool()]
+            image_hidden_states = image_hidden_states.view(hidden_states.shape[0], -1, hidden_states.shape[-1])
+            output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
+            output_latents = self.unpatchify(output_image_features)
+
+        return output_latents
+
+    def forward_images_with_cfg(
+        self,
+        cfg_scale: float = 1.0,
+        **kwargs,
+    ):
+        x = kwargs.pop("images", None)
+        t = kwargs.pop("timesteps", None)
+        half = x[: len(x) // 2]
+        combined = torch.cat([half, half], dim=0)
+        model_out = self.forward_images(combined, t, **kwargs)
+        eps, rest = model_out[:, :8], model_out[:, 8:]
+        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+        eps = torch.cat([half_eps, half_eps], dim=0)
+        return torch.cat([eps, rest], dim=1)
 
     @torch.no_grad()
     def generate(
@@ -198,11 +235,6 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 _,
                 inputs_embeds,
                 _,
-                _,
-                _,
-                _,
-                _,
-                _,
                 _
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs,
@@ -223,11 +255,48 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             **kwargs
         )
 
+    @torch.no_grad()
     def generate_images(
         self,
-        text
+        inputs: Optional[torch.Tensor] = None,
+        input_size: int = 32,
+        cfg_scale: float = 1.0,
+        **kwargs,
     ):
-        pass
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
+
+        using_cfg = cfg_scale > 1.0
+        num_images = len(inputs)
+        noise = torch.randn(num_images, 8, input_size, input_size, device=inputs.device)
+
+        if using_cfg:
+            noise = torch.cat([noise, noise], 0)
+            model_kwargs = dict(
+                input_ids=inputs,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                cfg_scale=cfg_scale,
+            )
+            sample_fn = self.forward_images_with_cfg
+        else:
+            model_kwargs = dict(
+                input_ids=inputs,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+            )
+            sample_fn = self.forward_images
+
+        samples = self.get_model().diffusion.p_sample_loop(
+            sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=True, device=self.get_model().device
+        )
+        if using_cfg:
+            samples, _ = torch.chunk(2, dim=0)
+
+        return samples
+
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):

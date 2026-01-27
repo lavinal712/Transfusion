@@ -180,17 +180,17 @@ class TransfusionMetaForCausalLM(ABC):
 
     def get_gen_projector(self):
         return self.get_model().gen_projector
-    
+
     def get_t_embedder(self):
         return self.get_model().t_embedder
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
-        images, image_sizes=None, timesteps=None,
+        images, image_sizes=None, timesteps=None, is_latent=False, add_noise=True,
     ):
         vision_tower = self.get_vision_tower()
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None, None, None
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, {}
 
         if type(images) is list or images.ndim == 5:
             if type(images) is list:
@@ -245,13 +245,14 @@ class TransfusionMetaForCausalLM(ABC):
                 timesteps = torch.randint(0, 1000, (images.shape[0],), device=images.device)
             t_emb = self.get_model().t_embedder(timesteps, dtype=images.dtype)
 
-            latents = self.get_model().get_vision_tower().encode(images)
+            latents = images
+            if not is_latent:
+                latents = self.get_model().get_vision_tower().encode(images)
             noise = torch.randn_like(latents)
-            if self.get_model().training:
-                noised_latents = self.get_model().diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
-            else:
-                noised_latents = latents
-            image_features = self.get_model().mm_projector(noised_latents)
+            input_latents = latents
+            if self.get_model().training and add_noise:
+                input_latents = self.get_model().diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
+            image_features = self.get_model().mm_projector(input_latents)
 
         # TODO: image start / end is not implemented here to support pretraining.
         # if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
@@ -402,7 +403,14 @@ class TransfusionMetaForCausalLM(ABC):
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, new_image_positions, latents, noised_latents, timesteps, t_emb, noise
+        packed_image_inputs = {
+            "image_positions": new_image_positions,
+            "latents": latents,
+            "timesteps": timesteps,
+            "t_emb": t_emb,
+        }
+
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, packed_image_inputs
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
         if model_args.mm_use_im_patch_token:
