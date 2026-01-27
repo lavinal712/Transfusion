@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from .diffusion import create_diffusion
 from .multimodal_encoder.builder import build_vision_tower
-from .multimodal_projector.builder import TimestepEmbedder, build_vision_projector, build_gen_vision_projector
+from .multimodal_projector.builder import build_vision_projector, build_gen_vision_projector
 
 from transfusion.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
@@ -23,7 +23,6 @@ class TransfusionMetaModel:
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
             self.gen_projector = build_gen_vision_projector(config)
-            self.t_embedder = TimestepEmbedder(config.hidden_size)
 
             if 'unpad' in getattr(config, 'mm_patch_merge_type', ''):
                 self.image_newline = nn.Parameter(
@@ -96,13 +95,6 @@ class TransfusionMetaModel:
             for p in self.gen_projector.parameters():
                 p.requires_grad = True
 
-        if getattr(self, "t_embedder", None) is None:
-            self.t_embedder = TimestepEmbedder(self.config.hidden_size)
-        else:
-            # In case it is frozen by LoRA
-            for p in self.t_embedder.parameters():
-                p.requires_grad = True
-
         if pretrain_mm_mlp_adapter is not None:
             mm_projector_weights = torch.load(pretrain_mm_mlp_adapter, map_location='cpu')
             def get_w(weights, keyword):
@@ -156,8 +148,8 @@ class TransfusionMetaForCausalLM(ABC):
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 
-    def encode_image_embeds(self, image_embeds, t_emb=None):
-        image_features = self.get_model().gen_projector(image_embeds, t_emb)
+    def encode_image_embeds(self, image_embeds, **kwargs):
+        image_features = self.get_model().gen_projector(image_embeds, **kwargs)
         return image_features
 
     def unpatchify(self, x):
@@ -180,9 +172,6 @@ class TransfusionMetaForCausalLM(ABC):
 
     def get_gen_projector(self):
         return self.get_model().gen_projector
-
-    def get_t_embedder(self):
-        return self.get_model().t_embedder
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels,
@@ -243,7 +232,6 @@ class TransfusionMetaForCausalLM(ABC):
         else:
             if timesteps is None:
                 timesteps = torch.randint(0, 1000, (images.shape[0],), device=images.device)
-            t_emb = self.get_model().t_embedder(timesteps, dtype=images.dtype)
 
             latents = images
             if not is_latent:
@@ -252,7 +240,7 @@ class TransfusionMetaForCausalLM(ABC):
             input_latents = latents
             if self.get_model().training and add_noise:
                 input_latents = self.get_model().diffusion.q_sample(latents, timesteps, noise=noise).to(dtype=latents.dtype)
-            image_features = self.get_model().mm_projector(input_latents)
+            image_features, additional_inputs = self.get_model().mm_projector(input_latents, timesteps)
 
         # TODO: image start / end is not implemented here to support pretraining.
         # if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
@@ -403,12 +391,12 @@ class TransfusionMetaForCausalLM(ABC):
         if _position_ids is None:
             position_ids = None
 
-        packed_image_inputs = {
-            "image_positions": new_image_positions,
-            "latents": latents,
-            "timesteps": timesteps,
-            "t_emb": t_emb,
-        }
+        packed_image_inputs = dict(
+            image_positions=new_image_positions,
+            latents=latents,
+            timesteps=timesteps,
+        )
+        packed_image_inputs.update(additional_inputs)
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, packed_image_inputs
 

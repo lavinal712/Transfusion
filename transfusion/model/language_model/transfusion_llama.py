@@ -78,10 +78,9 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
                 images,
                 image_sizes
             )
-        image_positions = packed_image_inputs.get("image_positions", None)
-        latents = packed_image_inputs.get("latents", None)
-        timesteps = packed_image_inputs.get("timesteps", None)
-        t_emb = packed_image_inputs.get("t_emb", None)
+        image_positions = packed_image_inputs.pop("image_positions", None)
+        latents = packed_image_inputs.pop("latents", None)
+        timesteps = packed_image_inputs.pop("timesteps", None)
 
         outputs = self.model(
             input_ids=input_ids,
@@ -115,7 +114,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             if image_positions is not None:
                 image_hidden_states = hidden_states[image_positions.bool()]
                 image_hidden_states = image_hidden_states.view(hidden_states.shape[0], -1, hidden_states.shape[-1])
-                output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
+                output_image_features = self.encode_image_embeds(image_hidden_states, **packed_image_inputs)
                 output_latents = self.unpatchify(output_image_features)
 
                 model_fn = self.forward_images

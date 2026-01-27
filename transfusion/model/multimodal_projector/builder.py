@@ -3,8 +3,6 @@ import torch.nn as nn
 import re
 import math
 
-from timm.models.vision_transformer import PatchEmbed
-
 
 class IdentityMap(nn.Module):
     def __init__(self):
@@ -33,29 +31,32 @@ class SimpleResBlock(nn.Module):
         return x + self.proj(x)
 
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-class TimestepEmbedder(nn.Module):
+class PatchEmbed(nn.Module):
+    """ 2D Image to Patch Embedding
     """
-    Embeds scalar timesteps into vector representations.
-    """
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+    def __init__(
+        self,
+        img_size: int = 224,
+        patch_size: int = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        frequency_embedding_size: int = 256,
+    ):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.time_embed = nn.Sequential(
+            nn.Linear(frequency_embedding_size, embed_dim, bias=True),
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.Linear(embed_dim, embed_dim, bias=True),
         )
         self.frequency_embedding_size = frequency_embedding_size
-
+    
     @staticmethod
     def timestep_embedding(t, dim, max_period=10000):
         """
         Create sinusoidal timestep embeddings.
         :param t: a 1-D Tensor of N indices, one per batch element.
-                          These may be fractional.
+                            These may be fractional.
         :param dim: the dimension of the output.
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an (N, D) Tensor of positional embeddings.
@@ -71,10 +72,16 @@ class TimestepEmbedder(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
-    def forward(self, t, dtype=torch.float32):
-        t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(dtype)
-        t_emb = self.mlp(t_freq)
-        return t_emb
+    def forward(self, x, t, **kwargs):
+        x = self.proj(x)
+        x = x.flatten(2).transpose(1, 2)
+        t_emb = self.timestep_embedding(t, self.frequency_embedding_size).to(x.dtype)
+        t_emb = self.time_embed(t_emb)
+        return x, {"t_emb": t_emb}
+
+
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class FinalLayer(nn.Module):
@@ -90,7 +97,8 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c):
+    def forward(self, x, **kwargs):
+        c = kwargs.pop("t_emb", None)
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
