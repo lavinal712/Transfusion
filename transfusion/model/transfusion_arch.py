@@ -152,21 +152,6 @@ class TransfusionMetaForCausalLM(ABC):
         image_features = self.get_model().gen_projector(image_embeds, **kwargs)
         return image_features
 
-    def unpatchify(self, x):
-        """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
-        """
-        c = self.config.mm_out_channels
-        p = self.config.mm_patch_size
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
-
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
-
     def get_mm_projector(self):
         return self.get_model().mm_projector
 

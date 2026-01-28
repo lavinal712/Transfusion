@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from PIL import Image
 from transformers import AutoConfig, AutoModelForCausalLM, \
                          LlamaConfig, LlamaModel, LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -114,8 +115,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             if image_positions is not None:
                 image_hidden_states = hidden_states[image_positions.bool()]
                 image_hidden_states = image_hidden_states.view(hidden_states.shape[0], -1, hidden_states.shape[-1])
-                output_image_features = self.encode_image_embeds(image_hidden_states, **packed_image_inputs)
-                output_latents = self.unpatchify(output_image_features)
+                output_latents = self.encode_image_embeds(image_hidden_states, **packed_image_inputs)
 
                 model_fn = self.forward_images
                 loss_dict = self.get_model().diffusion.training_losses(model_fn, latents, timesteps, model_output=output_latents)
@@ -172,8 +172,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             is_latent=True,
             add_noise=False,
         )
-        image_positions = packed_image_inputs.get("image_positions", None)
-        t_emb = packed_image_inputs.get("t_emb", None)
+        image_positions = packed_image_inputs.pop("image_positions", None)
 
         outputs = self.model(
             input_ids=input_ids,
@@ -192,8 +191,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
         if image_positions is not None:
             image_hidden_states = hidden_states[image_positions.bool()]
             image_hidden_states = image_hidden_states.view(hidden_states.shape[0], -1, hidden_states.shape[-1])
-            output_image_features = self.encode_image_embeds(image_hidden_states, t_emb)
-            output_latents = self.unpatchify(output_image_features)
+            output_latents = self.encode_image_embeds(image_hidden_states, **packed_image_inputs)
 
         return output_latents
 
@@ -268,7 +266,7 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             raise NotImplementedError("`inputs_embeds` is not supported")
 
         using_cfg = cfg_scale > 1.0
-        num_images = len(inputs)
+        num_images = inputs.shape[0]
         noise = torch.randn(num_images, 8, input_size, input_size, device=inputs.device)
 
         if using_cfg:
@@ -292,9 +290,12 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
             sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=True, device=self.get_model().device
         )
         if using_cfg:
-            samples, _ = torch.chunk(2, dim=0)
+            samples, _ = samples.chunk(2, dim=0)
 
-        return samples
+        samples = self.get_vision_tower.decode(samples)
+        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+
+        return dict(images=[Image.fromarray(image) for image in samples])
 
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,

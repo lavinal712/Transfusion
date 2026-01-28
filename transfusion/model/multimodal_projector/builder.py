@@ -3,6 +3,8 @@ import torch.nn as nn
 import re
 import math
 
+from .unet_projector import EncoderUNetModel, DecoderUNetModel
+
 
 class IdentityMap(nn.Module):
     def __init__(self):
@@ -77,7 +79,7 @@ class PatchEmbed(nn.Module):
         x = x.flatten(2).transpose(1, 2)
         t_emb = self.timestep_embedding(t, self.frequency_embedding_size).to(x.dtype)
         t_emb = self.time_embed(t_emb)
-        return x, {"t_emb": t_emb}
+        return x, dict(t_emb=t_emb)
 
 
 def modulate(x, shift, scale):
@@ -90,6 +92,8 @@ class FinalLayer(nn.Module):
     """
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
+        self.patch_size = patch_size
+        self.out_channels = out_channels
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
@@ -97,11 +101,27 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
+    def unpatchify(self, x):
+        """
+        x: (N, T, patch_size**2 * C)
+        imgs: (N, H, W, C)
+        """
+        c = self.out_channels
+        p = self.patch_size
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        return imgs
+
     def forward(self, x, **kwargs):
         c = kwargs.pop("t_emb", None)
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
+        x = self.unpatchify(x)
         return x
 
 
@@ -113,7 +133,18 @@ def build_vision_projector(config, delay_load=False, **kwargs):
     elif projector_type == 'linear_2':
         return PatchEmbed(config.mm_input_size, config.mm_patch_size, config.mm_in_channels, config.hidden_size)
     elif projector_type == 'unet':
-        return None
+        model = EncoderUNetModel(
+            image_size=config.mm_input_size,
+            in_channels=config.mm_in_channels,
+            model_channels=320,
+            out_channels=config.hidden_size,
+            num_res_blocks=2,
+            attention_resolutions=[4, 2, 1],
+            channel_mult=[1, 2, 4, 4],
+            num_heads=8,
+        )
+        model.convert_to_bf16()
+        return model
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
     if mlp_gelu_match:
@@ -138,7 +169,18 @@ def build_gen_vision_projector(config, delay_load=False, **kwargs):
     elif projector_type == 'linear_2':
         return FinalLayer(config.hidden_size, config.mm_patch_size, config.mm_out_channels)
     elif projector_type == 'unet':
-        return None
+        model = DecoderUNetModel(
+            image_size=config.mm_input_size,
+            in_channels=config.hidden_size,
+            model_channels=320,
+            out_channels=config.mm_out_channels,
+            num_res_blocks=2,
+            attention_resolutions=[4, 2, 1],
+            channel_mult=[1, 2, 4, 4],
+            num_heads=8,
+        )
+        model.convert_to_bf16()
+        return model
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
     if mlp_gelu_match:
