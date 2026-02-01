@@ -10,8 +10,8 @@ deepspeed transfusion/train/train.py \
     --mm_projector_type linear_2 \
     --gen_projector_type linear_2 \
     --mm_vision_select_layer -2 \
-    --mm_use_im_start_end False \
-    --mm_use_im_patch_token True \
+    --mm_use_im_start_end True \
+    --mm_use_im_patch_token False \
     --mm_input_size 32 \
     --mm_patch_size 2 \
     --mm_in_channels 8 \
@@ -20,7 +20,7 @@ deepspeed transfusion/train/train.py \
     --mm_image_size 256 \
     --group_by_modality_length True \
     --bf16 True \
-    --output_dir ./checkpoints/transfusion-v1.5-7b \
+    --output_dir ./checkpoints/transfusion-7b \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
