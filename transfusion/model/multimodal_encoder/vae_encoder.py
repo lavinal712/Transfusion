@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from diffusers import AutoencoderKL, ConfigMixin
+from diffusers import AutoencoderKL
 from diffusers.image_processor import VaeImageProcessor
 
 
@@ -16,7 +16,7 @@ class VAEVisionTower(nn.Module):
         if not delay_load:
             self.load_model()
         else:
-            self.cfg_only = ConfigMixin.load_config(self.vision_tower_name)
+            self.cfg_only = AutoencoderKL.load_config(self.vision_tower_name)
 
     def load_model(self, device_map=None):
         if self.is_loaded:

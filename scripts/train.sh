@@ -2,11 +2,11 @@
 
 deepspeed transfusion/train/train.py \
     --deepspeed ./scripts/zero3.json \
-    --model_name_or_path /aiarena/group/gmgroup/hongyq/models/lmsys/vicuna-7b-v1.5 \
+    --model_name_or_path lmsys/vicuna-7b-v1.5 \
     --version v1 \
-    --data_path /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/llava_v1_5_mix665k_filtered.json \
-    --image_folder /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/data \
-    --vision_tower /aiarena/group/gmgroup/hongyq/models/lavinal712/transfusion-vae \
+    --data_path data/liuhaotian/LLaVA-Instruct-150K/llava_v1_5_mix665k_filtered.json \
+    --image_folder data/liuhaotian/LLaVA-Instruct-150K/data \
+    --vision_tower lavinal712/transfusion-vae \
     --mm_projector_type linear_2 \
     --gen_projector_type linear_2 \
     --mm_vision_select_layer -2 \

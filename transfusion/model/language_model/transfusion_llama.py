@@ -297,7 +297,6 @@ class TransfusionLlamaForCausalLM(LlamaForCausalLM, TransfusionMetaForCausalLM):
 
         return dict(images=[Image.fromarray(image) for image in samples])
 
-
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)

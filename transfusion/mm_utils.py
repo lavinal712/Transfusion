@@ -175,6 +175,9 @@ def process_images(images, image_processor, model_cfg):
         for image in images:
             image = process_anyres_image(image, image_processor, model_cfg.image_grid_pinpoints)
             new_images.append(image)
+    elif image_aspect_ratio == 'fix':
+        image_height, image_width = 256, 256
+        return image_processor.preprocess(images, image_height, image_width)
     else:
         return image_processor(images, return_tensors='pt')['pixel_values']
     if all(x.shape == new_images[0].shape for x in new_images):

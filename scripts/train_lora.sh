@@ -3,11 +3,11 @@
 deepspeed transfusion/train/train.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
     --deepspeed ./scripts/zero2.json \
-    --model_name_or_path /aiarena/group/gmgroup/hongyq/models/lmsys/vicuna-7b-v1.5 \
+    --model_name_or_path lmsys/vicuna-7b-v1.5 \
     --version v1 \
-    --data_path /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/llava_v1_5_mix665k_filtered.json \
-    --image_folder /aiarena/group/gmgroup/hongyq/data/liuhaotian/LLaVA-Instruct-150K/data \
-    --vision_tower /aiarena/group/gmgroup/hongyq/models/lavinal712/transfusion-vae \
+    --data_path data/liuhaotian/LLaVA-Instruct-150K/llava_v1_5_mix665k_filtered.json \
+    --image_folder data/liuhaotian/LLaVA-Instruct-150K/data \
+    --vision_tower lavinal712/transfusion-vae \
     --mm_projector_type linear_2 \
     --gen_projector_type linear_2 \
     --mm_vision_select_layer -2 \
@@ -23,9 +23,9 @@ deepspeed transfusion/train/train.py \
     --bf16 True \
     --output_dir ./checkpoints/transfusion-7b-lora \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 16 \
+    --gradient_accumulation_steps 1 \
     --max_grad_norm 1.0 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \

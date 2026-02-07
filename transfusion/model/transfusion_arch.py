@@ -319,8 +319,8 @@ class TransfusionMetaForCausalLM(ABC):
         new_input_embeds_padded = []
         new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
         new_image_positions_padded = torch.zeros((batch_size, max_len), dtype=new_image_positions[0].dtype, device=new_image_positions[0].device)
-        # attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
-        attention_mask = torch.zeros((batch_size, 1, max_len, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
+        attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
+        # attention_mask = torch.zeros((batch_size, 1, max_len, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
         position_ids = torch.zeros((batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device)
 
         for i, (cur_new_embed, cur_new_labels, cur_new_image_positions) in enumerate(zip(new_input_embeds, new_labels, new_image_positions)):
@@ -333,13 +333,17 @@ class TransfusionMetaForCausalLM(ABC):
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     new_image_positions_padded[i, -cur_len:] = cur_new_image_positions
-                    # attention_mask[i, -cur_len:] = True
-                    attention_mask[i, :, -cur_len:, -cur_len:] = torch.tril(torch.ones((cur_len, cur_len), dtype=attention_mask.dtype, device=attention_mask.device))
-                    image_idx = torch.where(new_image_positions_padded[i, -cur_len:].bool())[0]
-                    if image_idx.numel() > 0:
-                        image_idx = image_idx + (max_len - cur_len)
-                        attention_mask[i, :, image_idx[:, None], image_idx[None, :]] = True
+                    attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+                    # attention_mask[i, :, -cur_len:, -cur_len:] = torch.tril(torch.ones((cur_len, cur_len), dtype=attention_mask.dtype, device=attention_mask.device))
+                    # image_idx = torch.where(new_image_positions_padded[i, -cur_len:].bool())[0]
+                    # if image_idx.numel() > 0:
+                    #     image_idx = image_idx + (max_len - cur_len)
+                    #     attention_mask[i, :, image_idx[:, None], image_idx[None, :]] = True
+                    # text_idx = torch.where(~new_image_positions_padded[i, -cur_len:].bool())[0]
+                    # if text_idx.numel() > 0:
+                    #     text_idx = text_idx + (max_len - cur_len)
+                    #     position_ids[i, text_idx] = torch.arange(0, text_idx.shape[0], dtype=position_ids.dtype, device=position_ids.device)
             else:
                 new_input_embeds_padded.append(torch.cat((
                     cur_new_embed,
@@ -348,12 +352,15 @@ class TransfusionMetaForCausalLM(ABC):
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     new_image_positions_padded[i, :cur_len] = cur_new_image_positions
-                    # attention_mask[i, :cur_len] = True
-                    attention_mask[i, :, :cur_len, :cur_len] = torch.tril(torch.ones((cur_len, cur_len), dtype=attention_mask.dtype, device=attention_mask.device))
-                    image_idx = torch.where(new_image_positions_padded[i, :cur_len].bool())[0]
-                    if image_idx.numel() > 0:
-                        attention_mask[i, :, image_idx[:, None], image_idx[None, :]] = True
+                    attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+                    # attention_mask[i, :, :cur_len, :cur_len] = torch.tril(torch.ones((cur_len, cur_len), dtype=attention_mask.dtype, device=attention_mask.device))
+                    # image_idx = torch.where(new_image_positions_padded[i, :cur_len].bool())[0]
+                    # if image_idx.numel() > 0:
+                    #     attention_mask[i, :, image_idx[:, None], image_idx[None, :]] = True
+                    # text_idx = torch.where(~new_image_positions_padded[i, :cur_len].bool())[0]
+                    # if text_idx.numel() > 0:
+                    #     position_ids[i, text_idx] = torch.arange(0, text_idx.shape[0], dtype=position_ids.dtype, device=position_ids.device)
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
         new_image_positions = new_image_positions_padded
@@ -367,11 +374,11 @@ class TransfusionMetaForCausalLM(ABC):
             attention_mask = None
         else:
             attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
-            if attention_mask.dim() == 4:
-                dtype = new_input_embeds.dtype
-                min_dtype = torch.finfo(dtype).min
-                attention_mask = (1 - attention_mask.to(dtype=torch.long)) * min_dtype
-                attention_mask = attention_mask.to(new_input_embeds.dtype)
+            # if attention_mask.dim() == 4:
+            #     dtype = new_input_embeds.dtype
+            #     min_dtype = torch.finfo(dtype).min
+            #     attention_mask = (1 - attention_mask.to(dtype=torch.long)) * min_dtype
+            attention_mask = attention_mask.to(new_input_embeds.dtype)
 
         if _position_ids is None:
             position_ids = None
